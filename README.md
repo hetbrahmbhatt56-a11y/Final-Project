@@ -2,7 +2,7 @@
 
 In this project I compared the returns of Treasury bonds and investment grade corporate bonds. Treasury bond returns are represented by the iShares 7-10 Year Treasury Bond ETF (IEF), while corporate bond returns are represented by the iShares iBoxx $ Investment Grade Corporate Bond ETF (LQD). The project also uses interest rate data and corporate credit-spread data to help explain how bond returns changed under different market conditions.
 
-#Research Question : How have Treasury bond returns compared with investment grade corporate bond returns, and how are those returns related to changes in interest rates and corporate credit spreads?
+# Research Question : How have Treasury bond returns compared with investment grade corporate bond returns, and how are those returns related to changes in interest rates and corporate credit spreads?
 
 ## Data Sources
 
