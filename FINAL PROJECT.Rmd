@@ -1,0 +1,340 @@
+---
+title: "Treasury Bond Returns vs. Corporate Bond Returns"
+author: Het Brahmbhatt
+output: html_document
+date: "2026-05-10"
+---
+
+```{r setup, include=FALSE}
+
+library(tidyverse)
+library(tidyquant)
+library(quantmod)
+library(lubridate)
+library(scales)
+library(knitr)
+library(kableExtra)
+library(zoo)
+library(plotly)
+library(htmlwidgets)
+library(janitor)
+
+knitr::opts_chunk$set(
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  fig.width = 9,
+  fig.height = 5
+)
+
+dir.create("data", showWarnings = FALSE)
+dir.create("figures", showWarnings = FALSE)
+
+start_date <- "2010-01-01"
+
+```
+
+# Introduction 
+
+I wanted to know the performance of Treasury bonds and investment grade corporate bonds. The main question I asked myself was whether investment grade corporate bonds provided meaningfully different returns than Treasury bonds, and whether those differences can be partly explained by changes in interest rates and credit spreads. Treasury bonds are represented by the iShares 7-10 Year Treasury Bond ETF, while corporate bonds are represented by the iShares iBoxx $ Investment Grade Corporate Bond ETF. I also use the 10-Year Treasury Constant Maturity Rate and the ICE BofA U.S. Corporate Index Option-Adjusted Spread to examine how interest rates and credit risk relate to bond returns.
+
+# Data Sources
+
+This project uses four datasets from two main sources: Yahoo Finance and FRED. The bond ETF data are used to calculate returns, while the FRED data are used to describe the interest-rate and credit-spread environment. The CSV files used for this project are included in the data folder of my GitHub repository https://github.com/hetbrahmbhatt56-a11y/Final-Project 
+
+```{r data-source-table}
+data_sources <- tribble(
+  ~Dataset, ~Source, ~Use,
+  "iShares 7-10 Year Treasury Bond ETF (IEF)", "Yahoo Finance", "Represents Treasury bond returns",
+  "iShares iBoxx $ Investment Grade Corporate Bond ETF (LQD)", "Yahoo Finance", "Represents investment-grade corporate bond returns",
+  "10-Year Treasury Constant Maturity Rate (DGS10)", "FRED", "Measures the interest-rate environment",
+  "ICE BofA U.S. Corporate Index Option-Adjusted Spread (BAMLC0A0CM)", "FRED", "Measures corporate credit risk"
+)
+
+data_sources |>
+  kable(caption = "Data Sources Used in the Project") |>
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover"))
+```
+```{r Importing ETF Prices}
+
+## First we need to clean the data. So I imported the ETF Data and now I am going to use adjusted prices because adjusted prices account for distributions, which makes them better for calculating returns. 
+
+
+if (!file.exists("data/IEF.csv") | !file.exists("data/LQD.csv")) {
+  getSymbols("IEF", src = "yahoo", from = start_date, auto.assign = TRUE)
+  getSymbols("LQD", src = "yahoo", from = start_date, auto.assign = TRUE)
+
+  ief_raw <- data.frame(date = index(IEF), coredata(IEF))
+  lqd_raw <- data.frame(date = index(LQD), coredata(LQD))
+
+  write_csv(ief_raw, "data/IEF.csv")
+  write_csv(lqd_raw, "data/LQD.csv")
+}
+
+ief_raw <- read_csv("data/IEF.csv")
+lqd_raw <- read_csv("data/LQD.csv")
+
+ief_prices <- ief_raw |>
+  clean_names() |>
+  select(date, ief_adjusted) |>
+  mutate(symbol = "IEF") |>
+  rename(price = ief_adjusted)
+
+lqd_prices <- lqd_raw |>
+  clean_names() |>
+  select(date, lqd_adjusted) |>
+  mutate(symbol = "LQD") |>
+  rename(price = lqd_adjusted)
+
+bond_prices_clean <- bind_rows(ief_prices, lqd_prices) |>
+  select(symbol, date, price)
+```
+
+```{r Importing Fred Data}
+
+## Now the next data I am going to import is the FRED data. These datasets provide the 10 year treasury rate and the corporate credit spread. The 10-year Treasury rate measures the interest-rate environment, while the credit spread measures the extra compensation investors demand for holding corporate bonds.
+
+
+dgs10_file <- if (file.exists("DGS10.csv")) {
+  "DGS10.csv"
+} else {
+  "DGS10 (3).csv"
+}
+
+dgs10_raw <- read_csv(dgs10_file)
+
+credit_spread_raw <- read_csv("BAMLC0A0CM.csv")
+
+dgs10_clean <- dgs10_raw |>
+  clean_names() |>
+  rename(treasury_10yr_rate = dgs10) |>
+  mutate(
+    observation_date = ymd(observation_date),
+    treasury_10yr_rate = as.numeric(treasury_10yr_rate)
+  ) |>
+  rename(date = observation_date)
+
+credit_spread_clean <- credit_spread_raw |>
+  clean_names() |>
+  rename(credit_spread = bamlc0a0cm) |>
+  mutate(
+    observation_date = ymd(observation_date),
+    credit_spread = as.numeric(credit_spread)
+  ) |>
+  rename(date = observation_date)
+```
+
+
+```{r Monthly Data}
+
+monthly_bond_returns <- bond_prices_clean |>
+  mutate(month = floor_date(date, "month")) |>
+  group_by(symbol, month) |>
+  summarize(month_end_price = last(price), .groups = "drop") |>
+  group_by(symbol) |>
+  arrange(month) |>
+  mutate(monthly_return = month_end_price / lag(month_end_price) - 1) |>
+  ungroup() |>
+  filter(!is.na(monthly_return))
+
+monthly_rates <- dgs10_clean |>
+  mutate(month = floor_date(date, "month")) |>
+  group_by(month) |>
+  summarize(
+    treasury_10yr_rate = mean(treasury_10yr_rate, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+monthly_credit_spreads <- credit_spread_clean |>
+  mutate(month = floor_date(date, "month")) |>
+  group_by(month) |>
+  summarize(
+    credit_spread = mean(credit_spread, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+
+```
+
+```{r Reshaping the ETF return data }
+
+tidy_bond_data <- monthly_bond_returns |>
+  select(symbol, month, monthly_return) |>
+  pivot_wider(
+    names_from = symbol,
+    values_from = monthly_return
+  ) |>
+  rename(
+    treasury_return = IEF,
+    corporate_return = LQD
+  ) |>
+  mutate(return_difference = corporate_return - treasury_return) |>
+  left_join(monthly_rates, by = "month") |>
+  left_join(monthly_credit_spreads, by = "month") |>
+  drop_na() |>
+  arrange(month)
+
+write_csv(tidy_bond_data, "data/tidy_bond_returns.csv")
+```
+
+
+# Monthly Data 
+
+
+The ETF price data are daily, but monthly data make the comparison easier to understand. I converted the ETF data to monthly returns by using the last adjusted price of each month. For the FRED data, I calculate the monthly average of the 10-year Treasury rate and the corporate credit spread.
+
+The **treasury_return** column shows the monthly return for the Treasury bond ETF, IEF.
+
+The **corporate_return** column shows the monthly return for the corporate bond ETF, LQD.
+
+The **return_difference** column shows corporate bond return minus Treasury bond return.
+
+The **treasury_10yr_rate** column shows the average 10-year Treasury interest rate for that month.
+
+The **credit_spread** column shows the extra yield investors demanded for holding corporate bonds instead of safer Treasury bonds.
+
+
+```{r Tidy Data }
+tidy_bond_data |>
+  slice_head(n = 10) |>
+  mutate(
+    treasury_return = percent(treasury_return, accuracy = 0.01),
+    corporate_return = percent(corporate_return, accuracy = 0.01),
+    return_difference = percent(return_difference, accuracy = 0.01),
+    treasury_10yr_rate = number(treasury_10yr_rate, accuracy = 0.01),
+    credit_spread = number(credit_spread, accuracy = 0.01)
+  ) |>
+  kable(caption = "Preview of the Tidy Monthly Bond Dataset")
+```
+
+# Comparing Returns 
+
+Now we get to the fun part. I am going to compare the Treasury bonds and Corporate bonds over time, I will calculate how an investment of $10,000 dollars would have grown in each ETF. This makes the return comparison easier to interpret than only looking at percentages.
+
+```{r Growth of Investment}
+initial_investment <- 10000
+
+cumulative_returns <- monthly_bond_returns |>
+  group_by(symbol) |>
+  arrange(month) |>
+  mutate(
+    growth_of_investment = initial_investment * cumprod(1 + monthly_return)
+  ) |>
+  ungroup()
+
+cumulative_returns |>
+  ggplot(aes(x = month, y = growth_of_investment, color = symbol)) +
+  geom_line(linewidth = 1) +
+  scale_y_continuous(labels = dollar_format()) +
+  labs(
+    title = "Growth of $10,000 Invested in Treasury and Corporate Bond ETFs",
+    x = "Month",
+    y = "Portfolio Value",
+    color = "ETF"
+  ) +
+  theme_minimal()
+```
+
+
+The chart shows us that treasury bonds and corporate bonds often move in the same general direction, but they clearly do not perform the same. This makes sense because corporate bonds have extra credit risk. When the corporate bond line is above the Treasury bond line, corporate bonds performed better over the period. When the Treasury bond line is higher, Treasury bonds performed better.
+
+
+# Return Difference 
+
+This chart shows the monthly return difference between corporate bonds and Treasury bonds. The difference is calculated as corporate bond return minus Treasury bond return. 
+
+Positive bars mean corporate bonds outperformed Treasury bonds during that month. Negative bars mean Treasury bonds outperformed corporate bonds. This chart is useful because it shows that the better performing bond type changes over time. Corporate bonds may do better when credit conditions are stable, while Treasury bonds may do better when investors become more cautious.
+
+```{r Return Difference}
+tidy_bond_data |>
+  ggplot(aes(x = month, y = return_difference)) +
+  geom_col() +
+  geom_hline(yintercept = 0, linewidth = 0.8) +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  labs(
+    title = "Corporate Bond Return Minus Treasury Bond Return",
+    x = "Month",
+    y = "Return Difference"
+  ) +
+  theme_minimal()
+```
+
+
+# Interactive Chart
+
+This chart is a fun way to know how much your portfolio was worth during a certain time. You just hover  the lines and see the exact portfolio value for each ETF. This makes the comparison easier to read because the exact value does not have to be estimated from the graph. It shows the timing of changes more clearly and allows the you to compare the two ETFs at specific months.
+
+
+```{r Interactive growth chart}
+interactive_growth_chart <- cumulative_returns |>
+  mutate(
+    bond_type = recode(
+      symbol,
+      IEF = "Treasury Bonds (IEF)",
+      LQD = "Corporate Bonds (LQD)"
+    )
+  ) |>
+  ggplot(aes(
+    x = month,
+    y = growth_of_investment,
+    color = bond_type,
+    text = paste(
+      "Month:", month,
+      "<br>Bond Type:", bond_type,
+      "<br>Portfolio Value:", dollar(growth_of_investment, accuracy = 0.01)
+    )
+  )) +
+  geom_line(linewidth = 1) +
+  scale_y_continuous(labels = dollar_format()) +
+  labs(
+    title = "Interactive Growth of $10,000 Invested",
+    x = "Month",
+    y = "Portfolio Value",
+    color = "Bond Type"
+  ) +
+  theme_minimal()
+
+ggplotly(interactive_growth_chart, tooltip = "text")
+```
+
+
+# Interest Rates and Credit Spreads
+
+This is one of the most important charts because it shows the 10-year Treasury rate and the corporate credit spread over time. The 10-year Treasury rate helps show the overall interest-rate environment, while the corporate credit spread shows how much extra return investors wanted for holding corporate bonds instead of safer Treasury bonds.
+
+```{r Market context chart}
+tidy_bond_data |>
+  select(month, treasury_10yr_rate, credit_spread) |>
+  pivot_longer(
+    cols = c(treasury_10yr_rate, credit_spread),
+    names_to = "series",
+    values_to = "value"
+  ) |>
+  mutate(
+    series = recode(
+      series,
+      treasury_10yr_rate = "10-Year Treasury Rate",
+      credit_spread = "Corporate Credit Spread"
+    )
+  ) |>
+  ggplot(aes(x = month, y = value, color = series)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Interest Rates and Corporate Credit Spreads Over Time",
+    x = "Month",
+    y = "Percent / Spread",
+    color = "Series"
+  ) +
+  theme_minimal()
+```
+
+This matters because bond returns are affected by both interest rates and risk. When interest rates rise, bond prices usually fall, which can hurt both Treasury bonds and corporate bonds. However, corporate bonds also have credit risk, so they can be affected when investors become more worried about companies being able to pay back their debt.
+
+The credit spread is important because it helps measure that extra corporate bond risk. When the spread rises, investors are demanding more compensation for holding corporate bonds. This can make corporate bonds perform worse compared with Treasury bonds. When the spread falls, investors are usually more comfortable with corporate credit risk, which can help corporate bonds perform better.
+
+# Conclusion. Which one should you invest in? 
+
+In this project I compared Treasury bond returns with investment-grade corporate bond returns using ETF price data and market data from FRED. Treasury bonds were represented by IEF, while corporate bonds were represented by LQD. I also used the 10-year Treasury rate and the corporate credit spread to better understand the market environment behind the returns.The results show that Treasury bonds and corporate bonds are related, but they do not behave exactly the same way.Both are affected by changes in interest rates, but corporate bonds also carry credit risk. This means corporate bond returns can be influenced by both Treasury rate movements and changes in investor confidence toward corporate debt.
+
+I made a growth chart with an initial investment of $10,000 it helped show the long-term performance difference between the two ETFs. In the end If you have 10,000 dollars that you want to invest. I would invest in IEF if the goal is safety, but LQD if the goal is higher income/return. Personally I would invest in LQD because I want a higher return. 
