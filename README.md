@@ -29,8 +29,3 @@ In this project I compared the returns of Treasury bonds and investment grade co
    Source: FRED, Federal Reserve Bank of St. Louis  
    Link: https://fred.stlouisfed.org/graph/fredgraph.csv?id=BAMLC0A0CM  
    Use in project: Used to measure credit risk in the corporate bond market.
-
-## Files
-
-- `final_project.Rmd`: Main R Markdown file.
-- `final_project.html`: Knitted HTML report.
